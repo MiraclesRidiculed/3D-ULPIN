@@ -1,12 +1,17 @@
 {
   "name": "vcad-frontend",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "copy-cesium": "node scripts/copy-cesium.mjs",
+    "test": "npm run test:logic && npm run test:workflow",
+    "test:logic": "node --test --experimental-strip-types scripts/workflow-logic.test.mjs scripts/compare-logic.test.mjs",
+    "test:workflow": "node --test scripts/workflow.test.mjs",
+    "test:pipeline": "node scripts/pipeline.test.mjs",
     "postinstall": "npm run copy-cesium"
   },
   "dependencies": {
