@@ -22,6 +22,17 @@ services:
     ports: ["8000:8000"]
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+  # Applies Alembic migrations once, before the API starts. The schema is owned
+  # by Alembic; database/init.sql only enables the PostGIS extensions.
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    environment:
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://vcad:vcad@db:5432/vcad
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
   frontend:
     image: node:20-bookworm-slim
     working_dir: /app

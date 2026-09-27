@@ -1,13 +1,14 @@
+-- V-CAD database bootstrap.
+--
+-- Schema ownership: Alembic owns the tables (backend/alembic/versions).
+-- This file runs first, on an empty data directory, and is responsible only for
+-- the extensions the schema depends on. Tables are created by `alembic upgrade
+-- head` so there is exactly one source of schema truth.
+--
+-- The original DDL that lived here was superseded by migration 0001 after the
+-- application models were inspected; that migration documents each deliberate
+-- divergence (TEXT primary keys, 2D geometry plus scalar elevations, added
+-- columns, generated metric-geometry companions).
+
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
--- Production-ready logical schema. The demo API uses a no-dependency local store so it runs immediately;
--- migrate these definitions with Alembic when connecting the persistence adapter.
-CREATE TABLE IF NOT EXISTS parcel (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), parcel_id TEXT UNIQUE NOT NULL, prototype_ulpin TEXT UNIQUE, geometry geometry(POLYGON,4326) NOT NULL, area DOUBLE PRECISION, land_use TEXT, survey_reference TEXT, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), version INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS building (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), building_id TEXT UNIQUE NOT NULL, parcel_id TEXT REFERENCES parcel(parcel_id), footprint geometry(POLYGON,4326), height DOUBLE PRECISION, floor_count INTEGER, confidence DOUBLE PRECISION, geometry_3d geometry(POLYHEDRALSURFACEZ,4326), created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), version INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS floor (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), building_id TEXT REFERENCES building(building_id), floor_number INTEGER NOT NULL, z_min DOUBLE PRECISION NOT NULL, z_max DOUBLE PRECISION NOT NULL, geometry_3d geometry(POLYGONZ,4326), confidence DOUBLE PRECISION, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), version INTEGER DEFAULT 1, UNIQUE(building_id, floor_number));
-CREATE TABLE IF NOT EXISTS property_volume (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), prototype_ulpin TEXT UNIQUE, parent_parcel_id TEXT REFERENCES parcel(parcel_id), building_id TEXT, property_type TEXT, floor_number INTEGER, z_min DOUBLE PRECISION, z_max DOUBLE PRECISION, geometry_3d geometry(POLYGONZ,4326), volume_m3 DOUBLE PRECISION, area_m2 DOUBLE PRECISION, geometry_hash TEXT NOT NULL, status TEXT, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), version INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS infrastructure (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), type TEXT, geometry_3d geometry(POLYGONZ,4326), z_min DOUBLE PRECISION, z_max DOUBLE PRECISION, owner_metadata JSONB, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(), version INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS validation_issue (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), object_a TEXT, object_b TEXT, issue_type TEXT, severity TEXT, overlap_volume DOUBLE PRECISION, description TEXT, geometry geometry(POLYGON,4326), status TEXT DEFAULT 'OPEN', created_at TIMESTAMPTZ DEFAULT now());
-CREATE TABLE IF NOT EXISTS data_source (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), source_type TEXT NOT NULL, filename TEXT NOT NULL, crs TEXT, acquisition_date DATE, metadata JSONB, created_at TIMESTAMPTZ DEFAULT now());
-CREATE INDEX IF NOT EXISTS parcel_geometry_gix ON parcel USING GIST (geometry);
-CREATE INDEX IF NOT EXISTS property_volume_geometry_gix ON property_volume USING GIST (geometry_3d);

@@ -3,5 +3,19 @@ node_modules/
 frontend/public/cesium/
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
 .env
 postgres_data/
+# Retained point-cloud uploads. Written at ingest time so extraction can re-read
+# the points; reproducible from the source data, so never committed.
+backend/data/
+# Synthetic LAS used by the frontend workflow integration test. Unlike the
+# retained uploads above this one is *committed*, because it is a fixed test
+# fixture the suite depends on: the test must exercise the real ingest path
+# against real bytes, not a file that changes between runs.
+!frontend/scripts/fixtures/
+# Alembic runtime artifacts
+*.db
+alembic.log
+frontend/tsconfig.tsbuildinfo
