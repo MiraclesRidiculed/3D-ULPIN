@@ -37,7 +37,7 @@ from app.repositories.base import CadastreRepository
 from app.services import point_cloud as pc_service
 from app.services import point_cloud_store as pc_store
 from app.services.audit import create_audit_event
-from app.services.crs import UNKNOWN_CRS
+from app.services.crs import UNKNOWN_CRS, WGS84
 from app.utils import now
 
 #: Job types recorded for every ingested point cloud. Every stage below is
@@ -90,7 +90,7 @@ def _display_bounds_dict(metadata: pc_service.PointCloudMetadata) -> dict[str, A
     """
     if metadata.display_bounds is None:
         return None
-    return _serialise(metadata.display_bounds, "EPSG:4326")
+    return _serialise(metadata.display_bounds, metadata.display_crs)
 
 
 def _source_bounds_dict(metadata: pc_service.PointCloudMetadata) -> dict[str, Any] | None:
@@ -178,11 +178,17 @@ def ingest_point_cloud(
             metadata.display_bounds = pc_service.display_bounds_for(
                 metadata.bounds, effective_crs
             )
+            metadata.processing_crs = pc_service.processing_crs_for_bounds(
+                metadata.bounds, effective_crs
+            )
+            metadata.density_points_per_m2 = pc_service.point_density_for_bounds(
+                metadata.bounds, effective_crs, metadata.point_count
+            )
 
         # Steps 7 and 8 are already resolved by the engine; surface them.
         bounds = pc_service.calculate_point_cloud_bounds(handle)
         point_count = pc_service.calculate_point_count(handle)
-        density = pc_service.calculate_point_density(handle)
+        density = metadata.density_points_per_m2
 
         # Step 9: register the source with full provenance.
         source_id = _next_source_id(repo)
@@ -194,6 +200,8 @@ def ingest_point_cloud(
             "file_size_bytes": size_bytes,
             "point_count": point_count,
             "source_crs": effective_crs,
+            "processing_crs": metadata.processing_crs,
+            "display_crs": metadata.display_crs,
             "crs_source": crs_origin,
             "crs_declared_in_payload": declared_crs != UNKNOWN_CRS,
             "density_points_per_m2": density,
@@ -233,6 +241,9 @@ def ingest_point_cloud(
                 "source_type": SourceType.POINT_CLOUD.value,
                 "filename": filename,
                 "crs": effective_crs,
+                "source_crs": effective_crs,
+                "processing_crs": metadata.processing_crs,
+                "display_crs": metadata.display_crs,
                 "acquisition_date": now()[:10],
                 "metadata": source_metadata,
                 "created_at": now(),
@@ -320,6 +331,9 @@ def ingest_point_cloud(
             "format": metadata.format,
             "point_count": point_count,
             "crs": effective_crs,
+            "source_crs": effective_crs,
+            "processing_crs": metadata.processing_crs,
+            "display_crs": metadata.display_crs,
             "crs_source": crs_origin,
             "bounds": _source_bounds_dict(metadata),
             "display_bounds": _display_bounds_dict(metadata),

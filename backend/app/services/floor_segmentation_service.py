@@ -60,7 +60,7 @@ class FloorSegmentationFailure(Exception):
 
 
 def _footprint_for(record: dict[str, Any], crs: str) -> Any:
-    """An extracted building's plan geometry, in its own projected CRS.
+    """An extracted building's plan geometry, in the processing CRS.
 
     The stored footprint is WGS84, so it is read as degrees and reprojected into
     the scan's CRS -- once. ``geojson_to_polygon`` would convert it into the local
@@ -70,9 +70,7 @@ def _footprint_for(record: dict[str, Any], crs: str) -> Any:
     if not geo:
         return None
     polygon = geometry_service.wgs84_geojson_to_polygon(geo)
-    if crs_service.is_metric(crs):
-        return crs_service.transform_geometry(polygon, "EPSG:4326", crs)
-    return polygon
+    return crs_service.transform_geometry(polygon, "EPSG:4326", crs)
 
 
 def _points_within(
@@ -199,7 +197,8 @@ def segment_building_floors(
     review_reasons: list[str] = []
 
     for record in buildings:
-        footprint = _footprint_for(record, crs)
+        processing_crs = points.processing_crs or points.crs
+        footprint = _footprint_for(record, processing_crs)
         mask = _points_within(points.x, points.y, footprint)
         bx, by, bz = points.x[mask], points.y[mask], points.z[mask]
         if bx.size == 0:
@@ -216,11 +215,19 @@ def segment_building_floors(
             bz,
             base_z=base_z,
             building_footprint=footprint,
-            crs=crs,
+            crs=processing_crs,
             floor_height=floor_height,
             source_id=source_id,
             processing_job_id=job_id,
         )
+        roles = {
+            "source_crs": points.source_crs or crs,
+            "processing_crs": processing_crs,
+            "display_crs": points.display_crs,
+        }
+        segmentation.provenance.update(roles)
+        for storey in segmentation.floors:
+            storey.provenance.update(roles)
         review_reasons.extend(segmentation.review_reasons)
 
         for storey in segmentation.floors:
@@ -229,7 +236,7 @@ def segment_building_floors(
                 source_id=source_id,
                 job_id=job_id,
                 building_id=str(record.get("id")),
-                crs=crs,
+                crs=processing_crs,
             )
             stored.append(repo.add("extracted_floors", record_out))
             # Recorded as the storey is created. The upstream extracted building
@@ -285,6 +292,9 @@ def segment_building_floors(
                 "storeys_found": len(stored),
                 "buildings_segmented": len(per_building),
                 "points_read": int(points.x.size),
+                "source_crs": points.source_crs or crs,
+                "processing_crs": points.processing_crs or points.crs,
+                "display_crs": points.display_crs,
                 "requires_human_review": bool(flagged),
                 "review_reasons": flagged,
                 "warnings": warnings,
@@ -303,6 +313,9 @@ def segment_building_floors(
             "stage": ProcessingJobType.FLOOR_SEGMENTATION.value,
             "processing_job_id": job_id,
             "storeys_found": len(stored),
+            "source_crs": points.source_crs or crs,
+            "processing_crs": points.processing_crs or points.crs,
+            "display_crs": points.display_crs,
             "method": floors_engine.SEGMENTATION_METHOD,
             "requires_human_review": bool(flagged),
         },
@@ -353,12 +366,8 @@ def _storey_record(
     crs: str,
 ) -> dict[str, Any]:
     """A storey as a persistable record, with the footprint reprojected once."""
-    wgs84 = (
-        crs_service.transform_geometry(
-            storey.footprint, crs, geometry_service.GEOGRAPHIC_CRS
-        )
-        if crs_service.is_metric(crs)
-        else storey.footprint
+    wgs84 = crs_service.transform_geometry(
+        storey.footprint, crs, geometry_service.GEOGRAPHIC_CRS
     )
     return {
         # The full building id, not its last dash-separated segment. An

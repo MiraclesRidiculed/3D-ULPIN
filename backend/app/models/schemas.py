@@ -197,6 +197,11 @@ class PointCloudMetadata(BaseModel):
     #: guessed, because assuming one silently mis-places the data.
     crs: str
     crs_source: str | None = None
+    #: Metric CRS selected from the known source extent. ``None`` when the
+    #: source has no declared CRS or no header extent from which to select one.
+    processing_crs: str | None = None
+    #: Geographic CRS of display bounds and persisted GeoJSON.
+    display_crs: str = "EPSG:4326"
     #: Bounds reprojected to WGS84 for display.
     display_bounds: PointCloudBounds | None = None
     point_format: str | None = None

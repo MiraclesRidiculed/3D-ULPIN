@@ -698,11 +698,9 @@ def _to_wgs84(footprint: Any, source_crs: str) -> dict[str, Any]:
     """Plan geometry as WGS84 GeoJSON, the storage CRS used everywhere."""
     from app.services import crs as crs_service
 
-    geometry = footprint
-    if crs_service.is_metric(source_crs):
-        geometry = crs_service.transform_geometry(
-            footprint, source_crs, geometry_service.GEOGRAPHIC_CRS
-        )
+    geometry = crs_service.transform_geometry(
+        footprint, source_crs, geometry_service.GEOGRAPHIC_CRS
+    )
     return {
         "type": geometry.geom_type,
         "coordinates": [[list(c) for c in geometry.exterior.coords]],
@@ -946,9 +944,7 @@ def _footprint_in_crs(
     if not isinstance(value, Mapping) or "coordinates" not in value:
         return None
     polygon = geometry_service.wgs84_geojson_to_polygon(value)
-    if crs_service.is_metric(source_crs):
-        return crs_service.transform_geometry(polygon, "EPSG:4326", source_crs)
-    return polygon
+    return crs_service.transform_geometry(polygon, "EPSG:4326", source_crs)
 
 
 __all__ = [

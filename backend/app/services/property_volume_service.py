@@ -86,8 +86,9 @@ def generate_volumes(
     if source is None:
         raise VolumeGenerationFailure(f"No point cloud source {source_id!r}", 404)
 
-    crs = source.get("crs") or crs_service.UNKNOWN_CRS
-    if crs == crs_service.UNKNOWN_CRS:
+    source_crs = source.get("crs") or crs_service.UNKNOWN_CRS
+    metadata = source.get("metadata") or {}
+    if source_crs == crs_service.UNKNOWN_CRS:
         _fail_stage(
             repo,
             source_id,
@@ -115,6 +116,26 @@ def generate_volumes(
             409,
         )
 
+    # Resolved only after the building guard, because the fallback below reads
+    # ``buildings[0]``. The CRS work initially inserted this block between the
+    # guard and its ``raise``, which detached the two: the guard stopped raising,
+    # ``buildings[0]`` raised IndexError on an empty list, and the caller got a
+    # 500 instead of the 409. Order is load-bearing, not cosmetic.
+    processing_crs = metadata.get("processing_crs")
+    if not processing_crs:
+        # A retained PLY has no header extent, but its extracted display
+        # footprint gives an explicit WGS84 anchor for selecting the metric CRS.
+        footprint = buildings[0].get("footprint")
+        try:
+            geometry = extraction_service.geometry_service.wgs84_geojson_to_polygon(footprint)
+            processing_crs = crs_service.select_processing_crs(
+                geometry, source_crs=crs_service.WGS84
+            )
+        except Exception as exc:  # noqa: BLE001 - cannot make a metric claim
+            raise VolumeGenerationFailure(
+                f"Source {source_id} has no resolvable processing CRS: {exc}", 422
+            ) from None
+
     storeys = floor_service.list_extracted_floors(repo, source_id=source_id)
     if not storeys:
         _fail_stage(
@@ -137,11 +158,16 @@ def generate_volumes(
             "source_id": source_id,
             "job_type": ProcessingJobType.PROPERTY_VOLUME_GENERATION.value,
             "status": JobStatus.RUNNING.value,
-            "crs": crs,
+            "crs": source_crs,
             "detail": "Generating property volumes",
             "started_at": now(),
             "created_by": created_by,
-            "metadata": {"method": volumes_engine.GENERATION_METHOD},
+            "metadata": {
+                "method": volumes_engine.GENERATION_METHOD,
+                "source_crs": source_crs,
+                "processing_crs": processing_crs,
+                "display_crs": crs_service.WGS84,
+            },
         },
     )
 
@@ -182,7 +208,7 @@ def generate_volumes(
         generation = volumes_engine.generate_property_volumes(
             building,
             building_storeys,
-            source_crs=crs,
+            source_crs=processing_crs,
             parcels=parcels,
             floor_plans=floor_plans,
             ground_datum=ground_datum,
@@ -194,6 +220,9 @@ def generate_volumes(
                 "building_id": building.get("id"),
                 "building_processing_job_id": building.get("processing_job_id"),
                 "building_method": building.get("method"),
+                "source_crs": source_crs,
+                "processing_crs": processing_crs,
+                "display_crs": crs_service.WGS84,
             },
         )
         warnings.extend(generation.warnings)

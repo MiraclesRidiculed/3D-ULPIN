@@ -12,9 +12,9 @@ is adapted with :func:`shapely.geometry.shape` directly from the GeoJSON
 mapping, deliberately bypassing the engine's local planar transform, which
 exists for metric maths only and must never be stored.
 
-Each geometry column has a generated, GIST-indexed companion in
-``METRIC_SRID``. Use that for measurement; ``ST_Area`` on the 4326 column
-returns square degrees, not square metres.
+Each geometry column has a generated, GIST-indexed companion in the metric CRS
+selected from its own WGS84 footprint. Use that for per-record measurement;
+``ST_Area`` on the 4326 column returns square degrees, not square metres.
 
 Transactions
 ------------

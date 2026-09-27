@@ -78,12 +78,9 @@ def _geojson_footprint(footprint: Any, crs: str) -> dict[str, Any]:
     *local-plane* to WGS84 transform and would reproject a second time -- sending
     the footprint hundreds of kilometres away and collapsing it to a point.
     """
-    if crs_service.is_metric(crs):
-        wgs84 = crs_service.transform_geometry(
-            footprint, crs, geometry_service.GEOGRAPHIC_CRS
-        )
-    else:
-        wgs84 = footprint
+    wgs84 = crs_service.transform_geometry(
+        footprint, crs, geometry_service.GEOGRAPHIC_CRS
+    )
     return {
         "type": wgs84.geom_type,
         "coordinates": [[list(coord) for coord in wgs84.exterior.coords]],
@@ -239,8 +236,22 @@ def extract_buildings(
         _record_extraction_failure(repo, source_id, exc.detail)
         raise ExtractionFailure(exc.detail, exc.status_code) from None
 
+    # PLY does not provide header bounds, so its processing CRS becomes known
+    # only when the points are read. Persist the resolved roles on the source
+    # rather than leaving consumers to infer them from a later job.
+    metadata = {
+        **metadata,
+        "source_crs": points.source_crs or crs,
+        "processing_crs": points.processing_crs or points.crs,
+        "display_crs": points.display_crs,
+    }
+    repo.update("sources", source_id, {"metadata": metadata})
+
     buildings = extractor.extract(
-        points, source_id=source_id, processing_job_id=job_id, crs=crs
+        points,
+        source_id=source_id,
+        processing_job_id=job_id,
+        crs=points.processing_crs or points.crs,
     )
 
     warnings: list[str] = []
@@ -265,7 +276,20 @@ def extract_buildings(
         # source is a normal thing to do (a re-survey, a parameter change), and
         # the new run's buildings must not collide with the previous run's rows.
         record["id"] = f"XB-{job_id}-{index:03d}"
-        record["footprint"] = _geojson_footprint(building.footprint, crs)
+        record["footprint"] = _geojson_footprint(
+            building.footprint, points.processing_crs or points.crs
+        )
+        # ``crs`` remains the scan's source CRS for the existing API contract;
+        # the arrays and extracted footprint were explicitly processed in the
+        # separately recorded processing CRS.
+        record["crs"] = crs
+        record["extraction"]["provenance"].update(
+            {
+                "source_crs": points.source_crs or crs,
+                "processing_crs": points.processing_crs or points.crs,
+                "display_crs": points.display_crs,
+            }
+        )
         record["created_at"] = now()
         stored.append(repo.add("extracted_buildings", record))
         # Provenance is recorded here, at the point the object comes into
@@ -305,6 +329,9 @@ def extract_buildings(
                 "method_description": METHOD_DESCRIPTION,
                 "buildings_found": len(stored),
                 "points_read": int(points.x.size),
+                "source_crs": points.source_crs or crs,
+                "processing_crs": points.processing_crs or points.crs,
+                "display_crs": points.display_crs,
                 "quality_summary": _quality_summary(stored),
                 "warnings": warnings,
             },
@@ -330,6 +357,9 @@ def extract_buildings(
             "extractor_version": EXTRACTOR_VERSION,
             "method": extractor.method,
             "points_read": int(points.x.size),
+            "source_crs": points.source_crs or crs,
+            "processing_crs": points.processing_crs or points.crs,
+            "display_crs": points.display_crs,
         },
     )
 

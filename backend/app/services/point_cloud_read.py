@@ -26,6 +26,7 @@ import numpy as np
 
 from app.models.enums import PointCloudFormat
 from app.services import point_cloud as pc_service
+from app.services import crs as crs_service
 from app.services.point_cloud_extraction import (
     DEFAULT_MAX_POINTS,
     PointSet,
@@ -76,6 +77,14 @@ def read_points(
             422,
         )
 
+    try:
+        source_crs = crs_service.crs_authority(effective_crs)
+    except Exception as exc:  # noqa: BLE001 - transport-facing error contract
+        raise PointReadError(
+            f"{name} has an unusable CRS {effective_crs!r}; supply a valid CRS.",
+            422,
+        ) from exc
+
     if fmt is PointCloudFormat.PLY:
         xs, ys, zs, read_in_chunks, truncated = _read_ply(path, name, max_points)
     else:
@@ -86,16 +95,39 @@ def read_points(
     if xs.size == 0:
         raise PointReadError(f"{name} yielded no points to process", 422)
 
+    # Extraction constants (grid size, DBSCAN radius, floor spacing) are in
+    # metres. Transform the actual arrays, not just their displayed footprint,
+    # before they reach that algorithm. A source CRS remains on the PointSet for
+    # provenance, while ``crs`` names the coordinate system of x/y below.
+    try:
+        processing_crs = crs_service.select_processing_crs(
+            point=(float(np.median(xs)), float(np.median(ys))),
+            source_crs=source_crs,
+        )
+        xs, ys = crs_service.transform_coordinates(
+            xs, ys, source_crs, processing_crs
+        )
+        xs = np.asarray(xs, dtype=np.float64)
+        ys = np.asarray(ys, dtype=np.float64)
+    except Exception as exc:  # noqa: BLE001 - coordinate errors are input errors
+        raise PointReadError(
+            f"{name} could not be transformed from {source_crs} into a metric processing CRS: {exc}",
+            422,
+        ) from exc
+
     return PointSet(
         x=xs,
         y=ys,
         z=zs,
-        crs=effective_crs,
+        crs=processing_crs,
         format=fmt.value,
         source_id=source_id,
         declared_point_count=int(xs.size),
         read_in_chunks=read_in_chunks,
         truncated=truncated,
+        source_crs=source_crs,
+        processing_crs=processing_crs,
+        display_crs=crs_service.WGS84,
     )
 
 
@@ -181,6 +213,9 @@ def point_set_summary(points: PointSet) -> dict[str, Any]:
         "truncated": points.truncated,
         "format": points.format,
         "crs": points.crs,
+        "source_crs": points.source_crs or points.crs,
+        "processing_crs": points.processing_crs or points.crs,
+        "display_crs": points.display_crs,
     }
 
 

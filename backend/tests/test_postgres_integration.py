@@ -33,7 +33,7 @@ from app.db.session import (
     set_database_url,
     uses_postgres,
 )
-from app.db.types import GEOGRAPHIC_SRID, METRIC_SRID
+from app.db.types import GEOGRAPHIC_SRID
 from app.repositories.postgres import PostgresCadastreRepository
 from app.services.demo import seed_demo
 from app.services.geometry import (
@@ -295,11 +295,87 @@ def test_geometry_srid_is_preserved(repo):
 
 
 def test_metric_column_is_projected_and_indexed(repo):
-    repo.add("parcels", _parcel_record())
+    """The metric companion is projected to the zone its own geometry sits in.
+
+    There is deliberately no universal metric SRID to assert against. The
+    companion selects its zone from the stored geometry's WGS84 centroid, so the
+    expected value is *computed from the record* and a stored record far from the
+    demo anchor must come back with a different, equally correct, zone.
+    """
+    parcel = _parcel_record()
+    repo.add("parcels", parcel)
     row_srid = repo.session.execute(
-        sa.text("SELECT ST_SRID(geometry_metric) FROM parcels LIMIT 1")
+        sa.text("SELECT ST_SRID(geometry_metric) FROM parcels WHERE id = :pid"),
+        {"pid": parcel["id"]},
     ).scalar()
-    assert row_srid == METRIC_SRID
+    expected = _expected_metric_srid(repo, parcel["id"])
+    assert row_srid == expected
+    # Projected, so metres: a plausible area, not a plausible number of degrees.
+    assert 1000.0 < repo.session.execute(
+        sa.text("SELECT ST_Area(geometry_metric) FROM parcels WHERE id = :pid"),
+        {"pid": parcel["id"]},
+    ).scalar() < 1_000_000.0
+
+
+def test_a_geometry_outside_the_demo_anchor_gets_its_own_zone(repo):
+    """The universal-zone assumption, proven gone rather than merely untested.
+
+    Two records thousands of kilometres apart must land in different UTM zones,
+    and each area must reflect its own location. Under a fixed zone one of the two
+    would be measured in a badly distorted projection and still report a number.
+    """
+    import shapely.geometry as sgeom
+    from shapely.ops import transform as shp_transform
+
+    from app.services.crs import transform_point
+
+    delhi = _parcel_record(parcel_id="P-DELHI")
+    # 51.5 N, -0.13 E: London.
+    lon, lat = -0.13, 51.5
+    ring = [
+        [lon + dlon, lat + dlat]
+        for dlon, dlat in ((0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01), (0, 0))
+    ]
+    london = _parcel_record(
+        parcel_id="P-LONDON",
+        geometry={"type": "Polygon", "coordinates": [ring]},
+    )
+    repo.add("parcels", delhi)
+    repo.add("parcels", london)
+
+    def zone_for(parcel_id: str) -> int:
+        return repo.session.execute(
+            sa.text("SELECT ST_SRID(geometry_metric) FROM parcels WHERE id = :pid"),
+            {"pid": parcel_id},
+        ).scalar()
+
+    delhi_zone, london_zone = zone_for(delhi["id"]), zone_for(london["id"])
+    assert delhi_zone != london_zone, (
+        f"both records got zone {delhi_zone}; the metric CRS is not per-location"
+    )
+    # London is UTM zone 30N, which is 32630. Asserted because it is a fixed,
+    # independently-known fact about a real place, not a project constant.
+    assert london_zone == 32630
+    # And the projection really was applied, not just relabelled.
+    assert repo.session.execute(
+        sa.text("SELECT ST_Area(geometry_metric) FROM parcels WHERE id = :pid"),
+        {"pid": london["id"]},
+    ).scalar() > 0
+    del sgeom, shp_transform, transform_point
+
+
+def _expected_metric_srid(repo, parcel_id: str) -> int:
+    """The zone the stored geometry's own centroid implies, computed not assumed."""
+    centroid = repo.session.execute(
+        sa.text(
+            "SELECT ST_X(ST_Centroid(geometry)), ST_Y(ST_Centroid(geometry)) "
+            "FROM parcels WHERE id = :pid"
+        ),
+        {"pid": parcel_id},
+    ).first()
+    from app.services.crs import utm_epsg_for
+
+    return int(utm_epsg_for(centroid[0], centroid[1]).split(":")[1])
 
 
 def test_area_is_square_metres_not_square_degrees(repo):

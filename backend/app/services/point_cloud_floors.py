@@ -1050,7 +1050,7 @@ def segment_floor_points(
     *,
     base_z: float,
     building_footprint: "Polygon | None" = None,
-    crs: str = "EPSG:32643",
+    crs: str,
     floor_height: float | None = None,
     building_index: int = 0,
     source_id: str = "",
@@ -1262,12 +1262,9 @@ def _per_floor_reasons(
 
 def _to_local_plane(footprint: "Polygon", crs: str) -> Any:
     """Footprint -> the engine's local projected plane, for the geometry hash."""
-    if crs_service.is_metric(crs):
-        wgs84 = crs_service.transform_geometry(
-            footprint, crs, geometry_service.GEOGRAPHIC_CRS
-        )
-    else:
-        wgs84 = footprint
+    wgs84 = crs_service.transform_geometry(
+        footprint, crs, geometry_service.GEOGRAPHIC_CRS
+    )
     return geometry_service.wgs84_to_local(wgs84)
 
 

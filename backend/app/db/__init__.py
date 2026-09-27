@@ -11,12 +11,11 @@ from app.db.session import (
     session_scope,
     uses_postgres,
 )
-from app.db.types import GEOGRAPHIC_SRID, METRIC_SRID
+from app.db.types import GEOGRAPHIC_SRID
 
 __all__ = [
     "COLLECTION_MODELS",
     "GEOGRAPHIC_SRID",
-    "METRIC_SRID",
     "Base",
     "check_database_health",
     "get_database_url",

@@ -40,7 +40,10 @@ from app.models.schemas import (
 from app.services.crs import (
     DISPLAY_PRECISION,
     UNKNOWN_CRS,
+    WGS84,
     crs_authority,
+    select_processing_crs,
+    transform_coordinates,
     transform_point,
 )
 
@@ -440,6 +443,51 @@ def detect_point_cloud_crs(pc: PointCloudHandle) -> str:
     return pc.crs or UNKNOWN_CRS
 
 
+def processing_crs_for_bounds(
+    bounds: PointCloudBounds, source_crs: str
+) -> str | None:
+    """Metric CRS for a known source extent, without inventing one for unknowns."""
+    if not bounds.is_defined or not source_crs or source_crs == UNKNOWN_CRS:
+        return None
+    try:
+        return select_processing_crs(
+            point=(
+                ((bounds.min_x or 0.0) + (bounds.max_x or 0.0)) / 2.0,
+                ((bounds.min_y or 0.0) + (bounds.max_y or 0.0)) / 2.0,
+            ),
+            source_crs=source_crs,
+        )
+    except Exception:  # noqa: BLE001 - metadata inspection must report ambiguity
+        return None
+
+
+def _bounds_area_m2(
+    bounds: PointCloudBounds, source_crs: str, processing_crs: str
+) -> float | None:
+    """Plan area of the source extent after an explicit metric transform."""
+    if not bounds.is_defined:
+        return None
+    corners_x = [bounds.min_x, bounds.max_x, bounds.max_x, bounds.min_x]
+    corners_y = [bounds.min_y, bounds.min_y, bounds.max_y, bounds.max_y]
+    try:
+        xs, ys = transform_coordinates(
+            corners_x, corners_y, source_crs, processing_crs
+        )
+    except Exception:  # noqa: BLE001 - invalid CRS/bounds means no density claim
+        return None
+    # Shoelace area preserves the transformed quadrilateral. Using width *
+    # height after transforming only its extrema would be wrong in a rotated or
+    # non-linear projection.
+    area = abs(
+        sum(
+            xs[index] * ys[(index + 1) % 4]
+            - ys[index] * xs[(index + 1) % 4]
+            for index in range(4)
+        )
+    ) / 2.0
+    return float(area) if area > 0 else None
+
+
 def calculate_point_density(pc: PointCloudHandle) -> float | None:
     """Points per square metre of plan extent.
 
@@ -449,12 +497,24 @@ def calculate_point_density(pc: PointCloudHandle) -> float | None:
     bounds = pc.bounds
     if not bounds.is_defined or not pc.point_count:
         return None
-    width = (bounds.max_x or 0) - (bounds.min_x or 0)
-    height = (bounds.max_y or 0) - (bounds.min_y or 0)
-    area = abs(width * height)
-    if area <= 0:
+    processing_crs = processing_crs_for_bounds(bounds, detect_point_cloud_crs(pc))
+    if processing_crs is None:
+        return None
+    area = _bounds_area_m2(bounds, detect_point_cloud_crs(pc), processing_crs)
+    if area is None:
         return None
     return pc.point_count / area
+
+
+def point_density_for_bounds(
+    bounds: PointCloudBounds, source_crs: str, point_count: int
+) -> float | None:
+    """Header-derived density with the source CRS made explicit."""
+    processing_crs = processing_crs_for_bounds(bounds, source_crs)
+    if processing_crs is None or not point_count:
+        return None
+    area = _bounds_area_m2(bounds, source_crs, processing_crs)
+    return (point_count / area) if area else None
 
 
 def _display_bounds(bounds: PointCloudBounds, crs: str) -> PointCloudBounds | None:
@@ -470,7 +530,7 @@ def _display_bounds(bounds: PointCloudBounds, crs: str) -> PointCloudBounds | No
         ]
         xs, ys = [], []
         for lon, lat in corners:
-            x, y = transform_point(lon, lat, crs, "EPSG:4326")
+            x, y = transform_point(lon, lat, crs, WGS84)
             xs.append(x)
             ys.append(y)
         return PointCloudBounds(
@@ -515,6 +575,7 @@ def get_point_cloud_metadata(pc: PointCloudHandle) -> PointCloudMetadata:
     Every field is header-derived; the point records are never read.
     """
     crs = detect_point_cloud_crs(pc)
+    processing_crs = processing_crs_for_bounds(pc.bounds, crs)
     return PointCloudMetadata(
         filename=pc.filename,
         format=pc.format.value,
@@ -525,6 +586,8 @@ def get_point_cloud_metadata(pc: PointCloudHandle) -> PointCloudMetadata:
         bounds=calculate_point_cloud_bounds(pc),
         crs=crs,
         crs_source=pc.crs_source,
+        processing_crs=processing_crs,
+        display_crs=WGS84,
         display_bounds=_display_bounds(pc.bounds, crs),
         point_format=pc.point_format,
         file_version=pc.file_version,
@@ -537,7 +600,9 @@ def get_point_cloud_metadata(pc: PointCloudHandle) -> PointCloudMetadata:
         comments=pc.comments,
         byte_order=pc.byte_order,
         text_format=pc.text_format,
-        density_points_per_m2=calculate_point_density(pc),
+        density_points_per_m2=point_density_for_bounds(
+            pc.bounds, crs, calculate_point_count(pc)
+        ),
         acquisition=_acquisition(pc),
     )
 
@@ -601,6 +666,8 @@ __all__ = [
     "format_for_filename",
     "get_point_cloud_metadata",
     "is_point_cloud_filename",
+    "point_density_for_bounds",
+    "processing_crs_for_bounds",
     "read_point_cloud",
     "spool_upload",
     "validate_point_cloud",

@@ -363,14 +363,119 @@ def test_generation_for_an_unknown_source_is_404(client, store):
 
 
 def test_generation_before_extraction_is_refused(client, store, upload):
+    """Regression: the CRS work split this guard from its ``raise``.
+
+    Inserting the ``processing_crs`` block between ``if not buildings:`` and its
+    ``raise`` left the guard no longer raising, so execution fell through to a
+    ``buildings[0]`` lookup on an empty list. For a LAS source that still
+    produced a 409 -- for the wrong reason, naming segmentation rather than
+    extraction -- and for a source whose metadata carries no ``processing_crs``
+    (a retained PLY) it raised ``IndexError`` and the API returned **HTTP 500**.
+
+    So the assertions here are deliberately about the whole failure mode, not
+    just the status code.
+    """
     r = client.post(
         "/import/source",
         files={"file": ("scan.las", upload(fx.three_storey_building()),
                         "application/octet-stream")},
     )
-    r = client.post(f"/point-clouds/{r.json()['source_id']}/property-volumes")
-    assert r.status_code == 409
+    source_id = r.json()["source_id"]
+    r = client.post(f"/point-clouds/{source_id}/property-volumes")
+
+    assert r.status_code == 409, (
+        f"expected a controlled 409, got {r.status_code}: {r.text[:300]}"
+    )
+    assert r.headers["content-type"].startswith("application/json"), (
+        "a domain error must still be JSON; a bare 500 body is how the IndexError "
+        "presented"
+    )
+    assert "indexerror" not in r.text.lower()
+    assert "list index out of range" not in r.text.lower()
+    # The message must name the stage the caller has actually not run yet.
     assert "extract" in r.json()["detail"].lower()
+
+
+def test_generation_before_extraction_is_refused_without_a_processing_crs(
+    client, store, tmp_path
+):
+    """The 500 case specifically: a source with no ``processing_crs`` in metadata.
+
+    A retained PLY has no header extent, so ingestion cannot select a metric CRS
+    and records ``processing_crs = None``. That is the input which made the
+    misplaced ``buildings[0]`` reachable. It must still be a controlled refusal.
+    """
+    from tests.fixtures.point_clouds import write_ply
+
+    path = write_ply(tmp_path / "scan.ply", n_points=200,
+                     crs_comment="comment crs EPSG:32643\n")
+    r = client.post(
+        "/import/source",
+        files={"file": ("scan.ply", path.read_bytes(), "application/octet-stream")},
+    )
+    assert r.status_code == 200, r.text
+    source_id = r.json()["source_id"]
+    # Confirm the premise: this source really does lack a processing CRS.
+    source = next(s for s in client.get("/data-sources").json() if s["id"] == source_id)
+    assert (source.get("metadata") or {}).get("processing_crs") is None
+
+    r = client.post(f"/point-clouds/{source_id}/property-volumes")
+    assert r.status_code == 409, (
+        f"expected a controlled 409, got {r.status_code}: {r.text[:300]}"
+    )
+    assert "extract" in r.json()["detail"].lower()
+    assert "indexerror" not in r.text.lower()
+
+
+def test_generation_with_a_building_and_a_processing_crs_succeeds(
+    client, store, upload
+):
+    """The positive control, so the guard above is not passing vacuously.
+
+    Extraction must be reachable and must leave the source with a processing CRS,
+    or the two refusals above would be satisfied by a pipeline that cannot run.
+    """
+    r = client.post(
+        "/import/source",
+        files={"file": ("scan.las", upload(fx.three_storey_building()),
+                        "application/octet-stream")},
+    )
+    source_id = r.json()["source_id"]
+    extracted = client.post(f"/point-clouds/{source_id}/extract")
+    assert extracted.status_code == 200, extracted.text
+    assert extracted.json()["buildings_found"] >= 1
+
+    source = next(s for s in client.get("/data-sources").json() if s["id"] == source_id)
+    assert (source.get("metadata") or {}).get("processing_crs"), (
+        "extraction must leave a processing CRS on the source"
+    )
+
+    client.post(f"/point-clouds/{source_id}/segment-floors")
+    r = client.post(f"/point-clouds/{source_id}/property-volumes")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["volumes_generated"] >= 1
+
+    # All three CRS roles are recorded on each volume's provenance. Not on the
+    # job: the service overwrites the job's metadata with its result summary on
+    # completion, so the CRS roles that survive are the ones on the artefact.
+    volumes = client.get(
+        f"/generated-property-volumes?source_id={source_id}"
+    ).json()
+    assert volumes
+    for volume in volumes:
+        prov = volume["source_provenance"]
+        assert prov["source_crs"], prov
+        assert prov["processing_crs"], prov
+        assert prov["display_crs"] == "EPSG:4326", prov
+        # The metric CRS must be projected, and distinct from the display CRS.
+        assert prov["processing_crs"] != prov["display_crs"], prov
+        assert prov["processing_crs"].startswith("EPSG:32"), (
+            f"processing CRS {prov['processing_crs']} is not a UTM zone"
+        )
+        # Geometry is stored as WGS84 regardless of the metric CRS used.
+        assert prov["wgs84_stored"] is True
+        assert volume["geometry_3d"]["coordinates"]
 
 
 def test_generation_before_segmentation_is_refused(client, store, upload):

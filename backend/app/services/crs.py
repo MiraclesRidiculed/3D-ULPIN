@@ -132,6 +132,20 @@ def is_metric(value: Any) -> bool:
     return crs_units(value) in ("metre", "meter", "m")
 
 
+def _is_suitable_metric_processing_crs(value: Any) -> bool:
+    """Whether a source CRS can be reused for local metric processing.
+
+    Web Mercator has metre axes but its scale distortion is location-dependent
+    and substantial away from the equator, so it is a display CRS rather than a
+    defensible default for cadastral measurement. Other local projected metre
+    CRSs are retained: replacing an explicit survey grid needlessly loses its
+    intended precision.
+    """
+    if not is_metric(value):
+        return False
+    return resolve_crs(value).to_epsg() != 3857
+
+
 @lru_cache(maxsize=64)
 def _transformer(source: Any, target: Any) -> Transformer:
     """Cached transformer. ``always_xy`` so inputs are always (x, y)."""
@@ -228,14 +242,14 @@ def select_processing_crs(
     geometry: BaseGeometry | None = None,
     *,
     point: tuple[float, float] | None = None,
-    source_crs: Any = WGS84,
+    source_crs: Any = None,
     processing_crs: Any = None,
 ) -> str:
     """Choose the projected metre CRS to measure in.
 
     Resolution order:
 
-    1. an explicit ``processing_crs`` — always honoured verbatim, so an
+    1. an explicit metric ``processing_crs`` — honoured verbatim, so an
        authoritative survey CRS supplied by the caller wins;
     2. ``source_crs`` itself, if it is already projected in metres (reprojecting
        would only add error);
@@ -244,31 +258,44 @@ def select_processing_crs(
     Parameters
     ----------
     geometry, point:
-        Where the work happens. Supply at least one. Defaults to the demo
-        anchor when neither is given.
+        Where the work happens. Supply at least one when a processing CRS must
+        be derived.
     source_crs:
         CRS the geometry's coordinates are expressed in.
     """
     if processing_crs:
+        if not is_metric(processing_crs):
+            raise CRSError(
+                f"processing CRS must be projected in metres: {processing_crs!r}"
+            )
         return crs_authority(processing_crs)
 
-    if source_crs and is_metric(source_crs):
+    if source_crs is None or str(source_crs).upper() == UNKNOWN_CRS:
+        raise CRSError("cannot choose a processing CRS without a known source CRS")
+
+    if _is_suitable_metric_processing_crs(source_crs):
         return crs_authority(source_crs)
 
     if point is None and geometry is not None:
-        target = WGS84 if (not source_crs or not is_projected(source_crs)) else source_crs
+        target = WGS84 if not is_projected(source_crs) else source_crs
         geom_in_target = transform_geometry(geometry, source_crs, target)
         centroid = geom_in_target.centroid
         point = (centroid.x, centroid.y)
         source_crs = target
 
     if point is None:
-        from app.services.geometry import DEMO_ANCHOR_LON, DEMO_ANCHOR_LAT
-
-        point = (DEMO_ANCHOR_LON, DEMO_ANCHOR_LAT)
-        source_crs = WGS84
+        raise ValueError(
+            "geometry or point is required to derive a processing CRS"
+        )
 
     lon, lat = transform_point(point[0], point[1], source_crs, WGS84)
+    # Standard UTM has no polar zones. Use the two metre-based polar
+    # stereographic systems there instead of silently selecting an invalid UTM
+    # zone from a longitude that has no UTM meaning.
+    if lat >= 84.0:
+        return "EPSG:3413"
+    if lat <= -80.0:
+        return "EPSG:3031"
     return utm_epsg_for(lon, lat)
 
 
@@ -277,10 +304,10 @@ class CRSContext:
     """The three CRS roles resolved together for a unit of work."""
 
     source_crs: str
-    processing_crs: str
+    processing_crs: str | None
     display_crs: str = WGS84
 
-    def describe(self) -> dict[str, str]:
+    def describe(self) -> dict[str, str | None]:
         return {
             "source_crs": self.source_crs,
             "processing_crs": self.processing_crs,
@@ -300,14 +327,18 @@ def crs_context(
     ``source_crs`` falls back to :func:`get_source_crs` semantics: unknown stays
     unknown rather than defaulting to WGS84.
     """
-    resolved_source = crs_authority(source_crs) if source_crs else WGS84
+    resolved_source = crs_authority(source_crs) if source_crs else UNKNOWN_CRS
     return CRSContext(
         source_crs=resolved_source,
-        processing_crs=select_processing_crs(
-            geometry,
-            point=point,
-            source_crs=resolved_source,
-            processing_crs=processing_crs,
+        processing_crs=(
+            select_processing_crs(
+                geometry,
+                point=point,
+                source_crs=resolved_source,
+                processing_crs=processing_crs,
+            )
+            if resolved_source != UNKNOWN_CRS
+            else None
         ),
         display_crs=WGS84,
     )
@@ -330,6 +361,19 @@ def transform_point(
         return x, y
     tx_x, tx_y = _transformer(source_crs, target_crs).transform(x, y)
     return tx_x, tx_y
+
+
+def transform_coordinates(
+    x: Any, y: Any, source_crs: Any, target_crs: Any
+) -> tuple[Any, Any]:
+    """Transform scalar or array coordinate pairs with explicit CRS roles.
+
+    Point-cloud readers use this vectorised path so metre-based algorithms never
+    receive raw degrees or feet. ``pyproj`` preserves the input array shape.
+    """
+    if crs_authority(source_crs) == crs_authority(target_crs):
+        return x, y
+    return _transformer(source_crs, target_crs).transform(x, y)
 
 
 def transform_geometry(
@@ -389,14 +433,15 @@ def calculate_metric_area(
     """
     if geometry is None or geometry.is_empty:
         return 0.0
-    target = processing_crs or select_processing_crs(
-        geometry, source_crs=source_crs or WGS84
-    )
-    if source_crs is not None:
-        measured = transform_geometry(geometry, source_crs, target)
-    else:
-        # Already projected; the target was derived from its own position.
+    if source_crs is None:
+        # Internal geometry-engine shapes live in its local metre plane. This
+        # is deliberately distinct from an external source with an unknown CRS.
         measured = geometry
+    else:
+        target = processing_crs or select_processing_crs(
+            geometry, source_crs=source_crs
+        )
+        measured = transform_geometry(geometry, source_crs, target)
     return abs(measured.area)
 
 
@@ -422,14 +467,16 @@ def calculate_metric_distance(
     """
     if a is None or b is None or a.is_empty or b.is_empty:
         return 0.0
-    target = processing_crs or select_processing_crs(
-        a, source_crs=source_crs or WGS84
-    )
-    if source_crs is not None:
+    if source_crs is None:
+        # See calculate_metric_area: only internal local-plane geometry may
+        # omit its CRS. Unknown external data must be rejected before here.
+        left, right = a, b
+    else:
+        target = processing_crs or select_processing_crs(
+            a, source_crs=source_crs
+        )
         left = transform_geometry(a, source_crs, target)
         right = transform_geometry(b, source_crs, target)
-    else:
-        left, right = a, b
     if method == "min":
         return float(left.distance(right))
     if method == "centroid":
@@ -449,14 +496,12 @@ def metric_bounds(
     processing_crs: Any = None,
 ) -> tuple[float, float, float, float]:
     """Bounds in metres, reprojecting first when the geometry is geographic."""
-    target = processing_crs or select_processing_crs(
-        geometry, source_crs=source_crs or WGS84
-    )
-    projected = (
-        transform_geometry(geometry, source_crs, target)
-        if source_crs is not None
-        else geometry
-    )
+    projected = geometry
+    if source_crs is not None:
+        target = processing_crs or select_processing_crs(
+            geometry, source_crs=source_crs
+        )
+        projected = transform_geometry(geometry, source_crs, target)
     minx, miny, maxx, maxy = projected.bounds
     return minx, miny, maxx, maxy
 
@@ -464,9 +509,9 @@ def metric_bounds(
 def describe_crs_roles(
     geometry: BaseGeometry | None = None,
     *,
-    source_crs: Any = WGS84,
+    source_crs: Any = None,
     processing_crs: Any = None,
-) -> dict[str, str]:
+) -> dict[str, str | None]:
     """Convenience for logging and API metadata."""
     return crs_context(
         geometry, source_crs=source_crs, processing_crs=processing_crs
@@ -494,6 +539,7 @@ __all__ = [
     "resolve_crs",
     "select_processing_crs",
     "transform_geometry",
+    "transform_coordinates",
     "transform_point",
     "utm_epsg_for",
 ]

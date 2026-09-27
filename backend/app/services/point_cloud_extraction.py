@@ -219,7 +219,7 @@ class PointCluster:
 
 @dataclass
 class PointSet:
-    """Points prepared for extraction, in the point cloud's projected CRS."""
+    """Points prepared for extraction, in the selected metric processing CRS."""
 
     x: np.ndarray
     y: np.ndarray
@@ -230,6 +230,10 @@ class PointSet:
     declared_point_count: int
     read_in_chunks: bool = True
     truncated: bool = False
+    #: Retained separately because ``crs`` describes the transformed arrays.
+    source_crs: str | None = None
+    processing_crs: str | None = None
+    display_crs: str = crs_service.WGS84
 
 
 @dataclass
@@ -972,12 +976,9 @@ def _footprint_hash(footprint: "Polygon", crs: str, height: float) -> str:
 
 def _to_local_plane(footprint: "Polygon", crs: str) -> Any:
     """Footprint -> the engine's local projected plane, via the CRS service."""
-    if crs_service.is_metric(crs):
-        wgs84 = crs_service.transform_geometry(
-            footprint, crs, geometry_service.GEOGRAPHIC_CRS
-        )
-    else:
-        wgs84 = footprint
+    wgs84 = crs_service.transform_geometry(
+        footprint, crs, geometry_service.GEOGRAPHIC_CRS
+    )
     return geometry_service.wgs84_to_local(wgs84)
 
 
@@ -1060,6 +1061,9 @@ class DeterministicBuildingExtractor(BuildingExtractor):
             "declared_point_count": points.declared_point_count,
             "read_in_chunks": points.read_in_chunks,
             "point_set_truncated": points.truncated,
+            "source_crs": points.source_crs or crs,
+            "processing_crs": points.processing_crs or crs,
+            "display_crs": points.display_crs,
             "ground_model": ground_model.summary(),
         }
 

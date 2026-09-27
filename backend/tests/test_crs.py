@@ -95,8 +95,49 @@ def test_processing_crs_is_derived_from_the_data_not_hardcoded():
 
 
 def test_select_processing_crs_from_a_point():
-    assert select_processing_crs(point=(77.2089, 28.6131)) == "EPSG:32643"
-    assert select_processing_crs(point=(-0.1276, 51.5072)) == "EPSG:32630"
+    """A point is only interpretable once its CRS is stated.
+
+    This used to read ``select_processing_crs(point=...)`` with no
+    ``source_crs``, which relied on a silent ``WGS84`` default. That default is
+    gone on purpose: guessing WGS84 for a coordinate whose CRS nobody declared
+    silently mis-places the data, and a derived UTM zone from a mis-placed point
+    is a confidently wrong number. The CRS is now stated at every call site.
+    """
+    assert select_processing_crs(
+        point=(77.2089, 28.6131), source_crs=WGS84
+    ) == "EPSG:32643"
+    assert select_processing_crs(
+        point=(-0.1276, 51.5072), source_crs=WGS84
+    ) == "EPSG:32630"
+
+
+def test_select_processing_crs_refuses_an_unknown_source_crs():
+    """No source CRS means no defensible answer, so it is an error not a default.
+
+    The removed behaviour returned the UTM zone for the demo anchor, which would
+    have measured an undeclared dataset in Delhi's grid.
+    """
+    for unstated in (None, UNKNOWN_CRS):
+        with pytest.raises(CRSError):
+            select_processing_crs(point=(77.2089, 28.6131), source_crs=unstated)
+
+
+def test_select_processing_crs_requires_a_location_to_derive_from():
+    """A known CRS but no geometry and no point cannot yield a zone."""
+    with pytest.raises(ValueError):
+        select_processing_crs(source_crs=WGS84)
+
+
+def test_a_point_in_a_projected_crs_is_derived_from_its_true_position():
+    """The point is reprojected before a zone is chosen, not read as degrees.
+
+    32643 easting/northing for the Delhi site. Treating those numbers as
+    longitude/latitude would select a nonsense zone from a plausible-looking one.
+    """
+    easting, northing = transform_point(77.2089, 28.6131, WGS84, "EPSG:32643")
+    assert select_processing_crs(
+        point=(easting, northing), source_crs="EPSG:32643"
+    ) == "EPSG:32643"
 
 
 def test_select_processing_crs_from_geometry():

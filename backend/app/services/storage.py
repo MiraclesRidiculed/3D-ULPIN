@@ -131,6 +131,7 @@ UPDATABLE_FIELDS: dict[str, frozenset[str]] = {
             "crs",
             "acquisition_date",
             "created_at",
+            "metadata",
         }
     ),
     "processing_jobs": frozenset(
@@ -145,6 +146,7 @@ UPDATABLE_FIELDS: dict[str, frozenset[str]] = {
             "error",
             "completed_at",
             "created_by",
+            "metadata",
         }
     ),
     "geometry_versions": frozenset(

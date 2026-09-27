@@ -30,7 +30,7 @@ no ``geometry_version`` anywhere       **added** to every geometry-bearing
                                        table, plus a new ``geometry_versions``
                                        history table.
 no metric columns                      **added** as generated, GIST-indexed
-                                       ``ST_Transform(..., 32643)`` columns.
+                                       location-aware metric columns.
 ===================================  ==========================================
 """
 from __future__ import annotations

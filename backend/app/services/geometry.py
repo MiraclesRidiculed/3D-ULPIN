@@ -768,12 +768,9 @@ def to_local_plane(geometry: BaseGeometry, source_crs: Any) -> BaseGeometry:
     The path every geometry hash takes, so a hash is independent of which
     projected CRS the geometry happened to be expressed in.
     """
-    if crs_service.is_metric(source_crs):
-        wgs84 = crs_service.transform_geometry(
-            geometry, source_crs, GEOGRAPHIC_CRS
-        )
-    else:
-        wgs84 = geometry
+    # ``source_crs`` may be another geographic CRS as well as a projected one.
+    # Treating every non-metric CRS as WGS84 silently changes its datum.
+    wgs84 = crs_service.transform_geometry(geometry, source_crs, GEOGRAPHIC_CRS)
     return wgs84_to_local(wgs84)
 
 
