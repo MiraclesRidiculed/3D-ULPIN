@@ -462,9 +462,17 @@ def test_openapi_surface_is_unchanged(client):
         for p, ops in spec["paths"].items()
     }
     # 21 core routes plus point-cloud, processing-job, extraction, storey,
-    # property-volume, rule-engine, review-workflow, audit, change and provenance
-    # views.
-    assert len(paths) == 57
+    # property-volume, rule-engine, review-workflow, audit, change, provenance and
+    # geometry-version views.
+    assert len(paths) == 62
+    # Geometry version history. Read-only: there is deliberately no route that
+    # writes a version, because deciding who may move a cadastral boundary is a
+    # policy question this layer must not answer.
+    assert paths["/geometry-versions"] == ["GET"]
+    assert paths["/geometry-versions/{object_id}"] == ["GET"]
+    assert paths["/geometry-versions/{object_id}/history"] == ["GET"]
+    assert paths["/geometry-versions/{object_id}/versions/{version}"] == ["GET"]
+    assert paths["/geometry-versions/{object_id}/compare"] == ["GET"]
     assert paths["/point-clouds"] == ["GET"]
     assert paths["/point-clouds/{source_id}"] == ["GET"]
     assert paths["/point-clouds/{source_id}/extract"] == ["POST"]

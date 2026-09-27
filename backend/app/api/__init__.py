@@ -5,13 +5,16 @@ routes, so route precedence (notably ``/ulpin/{ulpin}`` before
 ``/ulpin/generate``) is unchanged.
 
 ``reviews`` and ``audit`` are appended last: they are additive and must not
-perturb the precedence of anything that came before.
+perturb the precedence of anything that came before. ``geometry_versions`` is
+likewise additive and shares no path prefix with an existing router, so it
+perturbs nothing.
 """
 from app.api import (
     analytics,
     audit,
     buildings,
     changes,
+    geometry_versions,
     imports,
     infrastructure,
     parcels,
@@ -40,6 +43,7 @@ ROUTERS = (
     audit.router,
     changes.router,
     provenance.router,
+    geometry_versions.router,
 )
 
 __all__ = ["ROUTERS"]

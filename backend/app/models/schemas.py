@@ -154,6 +154,36 @@ class GeometryVersion(BaseModel):
     change_reason: str | None = None
 
 
+class CurrentGeometryVersion(BaseModel):
+    """An object's current geometry version, joined with its stable identity.
+
+    :class:`GeometryVersion` carries the geometry; it deliberately has no
+    identifier, because a geometry revision must never mint one. A caller asking
+    "what is the current state of this object" needs both, so this joins the
+    history row with the owning record's ``prototype_ulpin``.
+
+    Nothing here is derived. ``prototype_ulpin`` is read from the record, and the
+    rest is the stored version row as written by the versioning service.
+    """
+
+    object_id: str
+    object_type: str
+    #: The object's stable identifier, unchanged by any geometry revision.
+    #: ``None`` for record types that carry no identifier (buildings,
+    #: infrastructure); absence means "not issued", not "changed".
+    prototype_ulpin: str | None = None
+    version: int
+    geometry_hash: str
+    geometry: Geometry
+    z_min: float
+    z_max: float
+    source_id: str | None = None
+    processing_job_id: str | None = None
+    created_at: str
+    created_by: str | None = None
+    change_reason: str | None = None
+
+
 # --------------------------------------------------------------------------
 # Point clouds and processing jobs
 # --------------------------------------------------------------------------
@@ -408,6 +438,11 @@ class GeometryVersionComparison(BaseModel):
     object_id: str
     from_version: int
     to_version: int
+    #: The object's stable identifier, read from the owning record. Optional
+    #: because the diff itself is a pure geometry comparison and does not need
+    #: it; the API layer fills it in so a caller can see that the identifier
+    #: which did not change is the same on both sides.
+    prototype_ulpin: str | None = None
     #: Always False in a correct system: identity survives geometry edits.
     ulpin_changed: bool
     geometry_changed: bool

@@ -7,6 +7,13 @@ cadastral records and do not alter the active scene.
 in :mod:`app.services.point_cloud_ingestion`, which streams the upload to disk,
 hashes it, reads its header, resolves its CRS and extent, then records a source
 and processing jobs. Their points are never loaded.
+
+Every upload path is size-bounded *while it is being read*
+(:func:`read_bounded`), never after. ``await file.read()`` materialises the whole
+request body as one ``bytes`` object, so a size check that runs afterwards does
+not bound anything: the allocation has already happened. Reading in chunks and
+aborting at the cap means an oversized upload is refused while it is still
+arriving, and no more than the cap is ever resident.
 """
 from __future__ import annotations
 
@@ -16,10 +23,45 @@ import anyio
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import as_http_error, request_repository
+from app.config import MAX_UPLOAD_BYTES
 from app.repositories.base import CadastreRepository
 from app.services import ingestion, point_cloud, point_cloud_ingestion
 
 router = APIRouter(tags=["ingestion"])
+
+#: Read granularity for the bounded upload reader. Reuses the point-cloud
+#: pipeline's own chunk size so there is one constant for "how much of a body do
+#: we hold at once" rather than two.
+UPLOAD_CHUNK_BYTES = point_cloud.HASH_CHUNK_BYTES
+
+
+async def read_bounded(
+    file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES
+) -> bytes:
+    """Read an upload into memory, refusing to exceed ``max_bytes``.
+
+    Reads ``file.file`` incrementally rather than using ``file.read()``, so the
+    body is never materialised whole. A ``Content-Length`` is treated as a hint
+    only -- it is client-supplied and a client can understate it -- so the limit
+    is enforced against the bytes actually received. The result is at most
+    ``max_bytes`` long, so peak memory is bounded by the cap rather than by
+    whatever the caller chose to send.
+
+    The point-cloud route does not use this: it spools to disk instead, because
+    point clouds are large and must be retained anyway.
+    """
+    stream = file.file
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await anyio.to_thread.run_sync(stream.read, UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, "Maximum upload size is 10 MB")
+        parts.append(chunk)
+    return b"".join(parts)
 
 
 @router.get("/data-sources")
@@ -35,7 +77,7 @@ async def import_geojson(
     repository: CadastreRepository = Depends(request_repository),
 ) -> dict[str, Any]:
     """Register a GeoJSON upload. Counts features; creates no records."""
-    raw = await file.read()
+    raw = await read_bounded(file)
     try:
         return ingestion.register_geojson(repository, file.filename or "", raw)
     except ingestion.IngestionError as exc:
@@ -59,7 +101,7 @@ async def import_source(
     if point_cloud.is_point_cloud_filename(filename):
         return await _ingest_point_cloud(file, filename, crs, repository)
 
-    raw = await file.read()
+    raw = await read_bounded(file)
     try:
         return ingestion.register_source(
             repository, filename, raw, source_type, crs=crs
