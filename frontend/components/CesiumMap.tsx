@@ -5,18 +5,89 @@ type AnyRecord = Record<string, any>;
 type Overlay = { geometry:AnyRecord; zMin?:number|null; zMax?:number|null; color:string; label?:string };
 type Props = { parcels:AnyRecord[]; buildings:AnyRecord[]; properties:AnyRecord[]; infrastructure:AnyRecord[]; selected?:AnyRecord|null; focus?:AnyRecord|null; floor:number|"all"; underground:boolean; onPick:(item:AnyRecord)=>void; overlay?:Overlay[]; };
 
-const coords = (geo:any) => geo?.coordinates?.[0]?.flatMap((p:number[]) => [p[0],p[1]]) || [];
+const isPosition = (value:any):value is number[] =>
+  Array.isArray(value) &&
+  value.length >= 2 &&
+  typeof value[0] === "number" &&
+  Number.isFinite(value[0]) &&
+  value[0] >= -180 &&
+  value[0] <= 180 &&
+  typeof value[1] === "number" &&
+  Number.isFinite(value[1]) &&
+  value[1] >= -90 &&
+  value[1] <= 90;
 
-const rings = (geo:any):number[][][] => {
-  if (!geo) return [];
-  if (geo.type === "GeometryCollection") {
-    const part = (geo.geometries||[]).find((g:any) => g && (g.type === "Polygon" || g.type === "MultiPolygon"));
-    return part ? rings(part) : [];
+const coordinateArray = (value:any):value is number[] =>
+  Array.isArray(value) &&
+  value.length >= 4 &&
+  value.length % 2 === 0 &&
+  value.every((coordinate:number,index:number) =>
+    typeof coordinate === "number" &&
+    Number.isFinite(coordinate) &&
+    (index % 2 === 0 ? coordinate >= -180 && coordinate <= 180 : coordinate >= -90 && coordinate <= 90)
+  );
+
+const flatRing = (value:any):number[]|null => {
+  if (!Array.isArray(value)) return null;
+  const flat:number[] = [];
+  for (const position of value) {
+    if (!isPosition(position)) return null;
+    flat.push(position[0],position[1]);
   }
-  const parts:any[] = geo.type === "MultiPolygon" ? (geo.coordinates || []) : [geo.coordinates || []];
-  return parts
-    .map((polygon:any[]) => (polygon || []).map((ring:number[][]) => ring.flatMap((pt:number[]) => [pt[0],pt[1]])))
-    .filter((polygon:number[][]) => polygon.length > 0 && (polygon[0]?.length ?? 0) >= 3);
+  return coordinateArray(flat) && flat.length >= 6 ? flat : null;
+};
+
+/** Returns each polygon as flat exterior and interior rings in GeoJSON order. */
+const polygons = (geo:any):number[][][] => {
+  if (!geo || typeof geo !== "object") return [];
+  if (geo.type === "GeometryCollection") {
+    return Array.isArray(geo.geometries)
+      ? geo.geometries.flatMap((part:any) => polygons(part))
+      : [];
+  }
+
+  const asPolygon = (coordinates:any):number[][]|null => {
+    if (!Array.isArray(coordinates) || !coordinates.length) return null;
+    const rings = coordinates.map(flatRing);
+    if (rings.some((ring:number[]|null) => ring === null)) return null;
+    return rings as number[][];
+  };
+
+  if (geo.type === "Polygon") {
+    const polygon = asPolygon(geo.coordinates);
+    return polygon ? [polygon] : [];
+  }
+  if (geo.type === "MultiPolygon") {
+    if (!Array.isArray(geo.coordinates)) return [];
+    const result = geo.coordinates.map(asPolygon);
+    return result.some((polygon:number[][]|null) => polygon === null)
+      ? []
+      : result as number[][][];
+  }
+  return [];
+};
+
+const coords = (geo:any):number[] => polygons(geo)[0]?.[0] ?? [];
+
+const cartesianPositions = (Cesium:any, coordinates:any):any[] =>
+  coordinateArray(coordinates)
+    ? Cesium.Cartesian3.fromDegreesArray(coordinates)
+    : [];
+
+const cartesianPositionsWithHeights = (Cesium:any, coordinates:any):any[] => {
+  if (
+    !Array.isArray(coordinates) ||
+    coordinates.length < 6 ||
+    coordinates.length % 3 !== 0 ||
+    !coordinates.every((coordinate:number) => typeof coordinate === "number" && Number.isFinite(coordinate))
+  ) return [];
+  for (let i = 0; i < coordinates.length; i += 3) {
+    if (
+      coordinates[i] < -180 || coordinates[i] > 180 ||
+      coordinates[i + 1] < -90 || coordinates[i + 1] > 90
+    ) return [];
+  }
+  return Cesium.Cartesian3.fromDegreesArrayHeights(coordinates);
 };
 
 const colour = (r:AnyRecord) =>
@@ -139,6 +210,7 @@ export default function CesiumMap({
       outline=true
     ) => {
       const ring = coords(geo);
+      if (!coordinateArray(ring)) return;
 
       const low = Number.isFinite(zmin) ? zmin : 0;
       const high = Number.isFinite(zmax) ? zmax : low;
@@ -157,20 +229,20 @@ export default function CesiumMap({
       }
 
       if (heights.length) {
-        for (
-          const point of Cesium.Cartesian3.fromDegreesArrayHeights(heights)
-        ) {
+        for (const point of cartesianPositionsWithHeights(Cesium,heights)) {
           scenePoints.push(point);
         }
       }
 
+      const positions = cartesianPositions(Cesium,ring);
+      if (!positions.length) return;
       const e = viewer.entities.add({
         name:r.unit_label || r.building_id || r.parcel_id || r.type,
         vcadRecord:r,
         polygon:{
-          hierarchy:Cesium.Cartesian3.fromDegreesArray(ring),
-          height:zmin,
-          extrudedHeight:zmax,
+          hierarchy:positions,
+          height:low,
+          extrudedHeight:high,
           material:Cesium.Color
             .fromCssColorString(color)
             .withAlpha(r.id === selected?.id ? 0.92 : 0.62),
@@ -226,8 +298,13 @@ export default function CesiumMap({
 
     // Preserve existing verification overlays.
     (overlay || []).forEach((layer:Overlay,index:number) => {
-      const parts = rings(layer.geometry);
-      if (!parts.length) return;
+      const parts = polygons(layer.geometry);
+      if (!parts.length) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(`Skipping malformed Cesium overlay${layer.label ? ` "${layer.label}"` : ""}.`);
+        }
+        return;
+      }
 
       const zmin =
         typeof layer.zMin === "number"
@@ -240,10 +317,16 @@ export default function CesiumMap({
           : zmin + 1;
 
       parts.forEach((polygon:number[][],part:number) => {
+        const positions = cartesianPositions(Cesium,polygon[0]);
+        if (!positions.length) return;
+        const holes = polygon.slice(1)
+          .map((ring) => cartesianPositions(Cesium,ring))
+          .filter((ring) => ring.length > 0)
+          .map((ring) => new Cesium.PolygonHierarchy(ring));
         const e = viewer.entities.add({
           name:layer.label,
           polygon:{
-            hierarchy:Cesium.Cartesian3.fromDegreesArray(polygon),
+            hierarchy:new Cesium.PolygonHierarchy(positions,holes),
             height:zmin,
             extrudedHeight:zmax,
             material:Cesium.Color
@@ -312,16 +395,15 @@ export default function CesiumMap({
 
     if (!geo) return;
 
-    const ring =
-      rings(geo)[0]?.[0] ||
-      coords(geo);
+    const ring = coords(geo);
 
-    if (!ring.length) return;
+    const positions = cartesianPositions(Cesium,ring);
+    if (!positions.length) return;
 
     viewer.camera.flyTo({
       destination:
         Cesium.BoundingSphere.fromPoints(
-          Cesium.Cartesian3.fromDegreesArray(ring)
+          positions
         ).center,
       duration:.8,
       offset:new Cesium.HeadingPitchRange(
