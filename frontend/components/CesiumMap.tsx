@@ -395,24 +395,47 @@ export default function CesiumMap({
 
     if (!geo) return;
 
-    const ring = coords(geo);
+    const parts = polygons(geo);
+    if (!parts.length) return;
 
-    const positions = cartesianPositions(Cesium,ring);
-    if (!positions.length) return;
+    const zmin = typeof focus.z_min === "number" ? focus.z_min : 0;
+    const zmax =
+      typeof focus.z_max === "number"
+        ? focus.z_max
+        : typeof focus.height === "number"
+        ? focus.height
+        : zmin;
 
-    viewer.camera.flyTo({
-      destination:
-        Cesium.BoundingSphere.fromPoints(
-          positions
-        ).center,
-      duration:.8,
-      offset:new Cesium.HeadingPitchRange(
-        0,
-        Cesium.Math.toRadians(-45),
-        120
-      )
+    const scenePoints: any[] = [];
+    for (const polygon of parts) {
+      const ring = polygon[0];
+      if (!coordinateArray(ring)) continue;
+      const heights: number[] = [];
+      for (let i = 0; i < ring.length; i += 2) {
+        heights.push(ring[i], ring[i + 1], zmin, ring[i], ring[i + 1], zmax);
+      }
+      const withHeights = cartesianPositionsWithHeights(Cesium, heights);
+      if (withHeights.length) {
+        scenePoints.push(...withHeights);
+      } else {
+        scenePoints.push(...cartesianPositions(Cesium, ring));
+      }
+    }
+
+    if (!scenePoints.length) return;
+
+    const boundingSphere = Cesium.BoundingSphere.fromPoints(scenePoints);
+    const range = Math.max(boundingSphere.radius * 2.8, 60);
+
+    viewer.camera.flyToBoundingSphere(boundingSphere, {
+      duration: 0.8,
+      offset: new Cesium.HeadingPitchRange(
+        Cesium.Math.toRadians(20),
+        Cesium.Math.toRadians(-35),
+        range
+      ),
     });
-  }, [viewerReady,focus]);
+  }, [viewerReady, focus]);
 
   return (
     <div
