@@ -163,7 +163,10 @@ export default function CesiumMap({
 
       handler.setInputAction(
         (movement:any) => {
-          const picked = viewer.scene.pick(movement.position);
+          const pickedEntities = viewer.scene.drillPick(movement.position);
+          const picked =
+            pickedEntities.find((candidate:any) => candidate.id?.vcadKind === "property") ??
+            pickedEntities.find((candidate:any) => candidate.id?.vcadRecord);
           if (picked?.id?.vcadRecord) {
             onPickRef.current(picked.id.vcadRecord);
           }
@@ -207,7 +210,8 @@ export default function CesiumMap({
       zmin:number,
       zmax:number,
       color:string,
-      outline=true
+      outline=true,
+      kind="record"
     ) => {
       const ring = coords(geo);
       if (!coordinateArray(ring)) return;
@@ -236,22 +240,34 @@ export default function CesiumMap({
 
       const positions = cartesianPositions(Cesium,ring);
       if (!positions.length) return;
+      const isProperty = kind === "property";
+      const isSelected = r.id === selected?.id;
       const e = viewer.entities.add({
         name:r.unit_label || r.building_id || r.parcel_id || r.type,
         vcadRecord:r,
+        vcadKind:kind,
+        vcadBaseColor:color,
         polygon:{
           hierarchy:positions,
           height:low,
           extrudedHeight:high,
           material:Cesium.Color
-            .fromCssColorString(color)
-            .withAlpha(r.id === selected?.id ? 0.92 : 0.62),
+            .fromCssColorString(isProperty
+              ? isSelected ? "#10d6bf" : "#718d89"
+              : color)
+            .withAlpha(isProperty
+              ? isSelected ? 0.58 : 0.16
+              : isSelected ? 0.92 : 0.62),
           outline,
           outlineColor:Cesium.Color
             .fromCssColorString(
-              r.id === selected?.id ? "#fff1a3" : "#a4dad4"
-            ),
-          outlineWidth:r.id === selected?.id ? 3 : 1,
+              isProperty
+                ? isSelected ? "#d4fff6" : "#456d69"
+                : isSelected ? "#fff1a3" : "#a4dad4"
+            ).withAlpha(isProperty
+              ? isSelected ? 0.98 : 0.58
+              : 1),
+          outlineWidth:isSelected ? 3 : 1,
           perPositionHeight:false
         }
       });
@@ -280,7 +296,9 @@ export default function CesiumMap({
           p.geometry_3d,
           p.z_min,
           p.z_max,
-          colour(p)
+          colour(p),
+          true,
+          "property"
         )
       );
 
@@ -376,11 +394,36 @@ export default function CesiumMap({
     buildings,
     properties,
     infrastructure,
-    selected,
     floor,
     underground,
     overlay
   ]);
+
+  useEffect(() => {
+    const Cesium = cesiumRef.current;
+    if (!Cesium || !viewerReady) return;
+
+    entityRef.current.forEach((entity) => {
+      if (!entity.vcadRecord || !entity.polygon) return;
+      const isSelected = entity.vcadRecord.id === selected?.id;
+      const isProperty = entity.vcadKind === "property";
+      entity.polygon.material = Cesium.Color
+        .fromCssColorString(isProperty
+          ? isSelected ? "#10d6bf" : "#718d89"
+          : entity.vcadBaseColor)
+        .withAlpha(isProperty
+          ? isSelected ? 0.58 : 0.16
+          : isSelected ? 0.92 : 0.62);
+      entity.polygon.outlineColor = Cesium.Color
+        .fromCssColorString(isProperty
+          ? isSelected ? "#d4fff6" : "#456d69"
+          : isSelected ? "#fff1a3" : "#a4dad4")
+        .withAlpha(isProperty
+          ? isSelected ? 0.98 : 0.58
+          : 1);
+      entity.polygon.outlineWidth = isSelected ? 3 : 1;
+    });
+  }, [viewerReady, selected?.id]);
 
   useEffect(() => {
     const viewer = viewerRef.current;

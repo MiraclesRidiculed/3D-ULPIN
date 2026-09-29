@@ -53,7 +53,7 @@ import {
   ChangeInspector,
   ChangeList,
   LineagePanel,
-  useOverlayFor,
+  overlayFor,
 } from "../components/ChangeInspector";
 import { showObjectLineage } from "../lib/compare.ts";
 import type { ObjectLineage } from "../lib/compare.ts";
@@ -430,17 +430,20 @@ export default function CommandCenter() {
   const mapBuildings = useMemo(() => [...workspace.buildings, ...visibleDerived.buildings], [workspace.buildings, visibleDerived.buildings]);
   const mapProperties = useMemo(() => [...workspace.properties, ...visibleDerived.properties], [workspace.properties, visibleDerived.properties]);
 
-  const changeOverlay = useOverlayFor(selectedChange, layers).map((view) => ({
+  const changeOverlay = useMemo(() => overlayFor(selectedChange, layers).map((view) => ({
     geometry: view.geometry,
     zMin: view.zMin,
     zMax: view.zMax,
     color: view.colour,
     label: view.label,
-  }));
-  const findingOverlay = selectedSection === "validation" && selected?.geometry
-    ? [{ geometry: selected.geometry, zMin: 0, zMax: 0, color: "#e0b25c", label: "Validation finding" }]
-    : [];
-  const overlays = [...changeOverlay, ...findingOverlay];
+  })), [selectedChange, layers]);
+  const findingGeometry = selectedSection === "validation" ? selected?.geometry : null;
+  const findingOverlay = useMemo(() =>
+    findingGeometry
+      ? [{ geometry: findingGeometry, zMin: 0, zMax: 0, color: "#e0b25c", label: "Validation finding" }]
+      : [],
+  [findingGeometry]);
+  const overlays = useMemo(() => [...changeOverlay, ...findingOverlay], [changeOverlay, findingOverlay]);
 
   const findSpatialRecord = useCallback((item: RecordAny, section?: Section): RecordAny | null => {
     if (hasGeometry(item)) return item;

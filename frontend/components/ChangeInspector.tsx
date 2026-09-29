@@ -250,7 +250,7 @@ export function ChangeList({
 }
 
 /** Whether a change can actually be drawn, used by the parent to build the overlay. */
-export function useOverlayFor(change: AnyRecord | null, layers: Record<string, boolean>) {
+export function overlayFor(change: AnyRecord | null, layers: Record<string, boolean>) {
   if (!change) return [];
   return changeOverlays(change).filter((view) => {
     const key = view.label === "Previous" ? "before" : view.label === "Current" ? "after" : "changed";
